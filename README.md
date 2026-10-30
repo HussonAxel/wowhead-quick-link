@@ -13,3 +13,14 @@ tooltips, and for pieces in the Appearances and Sets tabs of the Collections win
 appearance source gives the link of that exact version. Classic flavors are unchanged.
 
 Upstream AddOn: https://www.curseforge.com/wow/addons/wowhead-quick-link
+
+## Installation du fork
+
+Copier le dossier **`WowheadQuickLink/`** de ce dépôt dans
+`World of Warcraft/_retail_/Interface/AddOns/`, puis relancer le jeu
+ou saisir `/reload`. Le fichier doit se trouver à
+`Interface/AddOns/WowheadQuickLink/WowheadQuickLink.toc`.
+
+Les sources et les fichiers de configuration du packaging sont regroupés dans
+`WowheadQuickLink/`. La documentation, la licence et les workflows restent à la
+racine du dépôt. Le workflow de publication utilise ce dossier comme source.
