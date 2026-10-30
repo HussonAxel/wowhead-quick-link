@@ -33,10 +33,37 @@ local function FormatIdAndSuffix(id, bonusIds, suffix)
 end
 
 
+-- Specific strategies tried before the others: pairs() has no order, and generic ones such as
+-- GetToyCollectionItemFromFocus (any focus with an itemID) would otherwise drop the bonus IDs.
+local priorityStrategies = { "GetTransmogSetItemFromFocus", "GetTransmogCollectionItemFromFocus" }
+
+
+-- One broken strategy must not prevent the others from running.
+local function RunStrategy(name, strategy, dataSources)
+    local results = { pcall(strategy, dataSources) }
+    if not results[1] then
+        nameSpace.lastErrors = nameSpace.lastErrors or {}
+        table.insert(nameSpace.lastErrors, name .. ": " .. tostring(results[2]))
+        return
+    end
+    return unpack(results, 2)
+end
+
+
 function nameSpace.strategies.GetWowheadUrl(dataSources)
-    for _, strategy in pairs(strategies.wowhead) do
-        local id, type, bonusIds = strategy(dataSources)
+    local ordered = {}
+    for _, name in ipairs(priorityStrategies) do
+        ordered[#ordered + 1] = { name, strategies.wowhead[name] }
+    end
+    for name, strategy in pairs(strategies.wowhead) do
+        if not tContains(priorityStrategies, name) then
+            ordered[#ordered + 1] = { name, strategy }
+        end
+    end
+    for _, entry in ipairs(ordered) do
+        local id, type, bonusIds = RunStrategy(entry[1], entry[2], dataSources)
         if id and type then
+            nameSpace.Debug("strategy", entry[1], "->", type, id, bonusIds)
             local typeStr
             if type == "npc" then
                 typeStr = type:upper()
@@ -180,6 +207,34 @@ local function GetFromLink(link)
 end
 
 
+-- Appearance modifier (itemModID of a transmog source) -> a bonus ID applying it, from the
+-- ItemBonus table (type 7). These also carry the difficulty label (Heroic/Mythic/Raid Finder).
+local BONUS_FOR_APPEARANCE_MODIFIER = { [1] = "9080", [3] = "9081", [4] = "9082" }
+
+-- Bonus IDs found in collection links that say nothing about the version.
+local PLACEHOLDER_BONUS_IDS = { ["3524"] = true }
+
+
+local function Debug(...)
+    if WowheadQuickLinkCfg and WowheadQuickLinkCfg.debug then
+        print("|cff33ff99WQL debug|r", ...)
+    end
+end
+nameSpace.Debug = Debug
+
+
+-- Links given by the collection API for older items only carry a "serverside" placeholder
+-- bonus (3524) that does not tell the difficulty: they point to the Normal version even for a
+-- Mythic appearance. Use the appearance modifier of the source instead.
+local function FixBonusForSource(sourceID, bonusIds)
+    if bonusIds and not PLACEHOLDER_BONUS_IDS[bonusIds] then return bonusIds end
+    local info = C_TransmogCollection.GetSourceInfo and C_TransmogCollection.GetSourceInfo(sourceID)
+    local modifier = info and info.itemModID
+    Debug("sourceID", sourceID, "itemModID", modifier, "link bonus", bonusIds)
+    return BONUS_FOR_APPEARANCE_MODIFIER[modifier] or bonusIds
+end
+
+
 -- The collection API gives an item link for each appearance source; it carries the bonus IDs
 -- of that exact version, where the plain itemID would point to the base version.
 local function GetItemFromAppearanceSource(sourceID, fallbackItemID)
@@ -192,10 +247,13 @@ local function GetItemFromAppearanceSource(sourceID, fallbackItemID)
         else
             link = select(6, C_TransmogCollection.GetAppearanceSourceInfo(sourceID))
         end
+        Debug("source link", link and link:gsub("|", "||"))
         local id, linkType, bonusIds = GetFromLink(link)
-        if id and linkType == "item" then return id, linkType, bonusIds end
+        if id and linkType == "item" then
+            return id, linkType, FixBonusForSource(sourceID, bonusIds)
+        end
     end
-    return fallbackItemID, "item"
+    return fallbackItemID, "item", FixBonusForSource(sourceID, nil)
 end
 
 
@@ -448,18 +506,32 @@ function strategies.wowhead.GetTransmogCollectionItemFromFocus(data)
 end
 
 
+-- Set pieces (WardrobeSetsDetailsItemMixin) carry sourceID/itemID. Mouse focus can be a child
+-- of the piece (favorite icon...), so look at the tooltip owner and the parent as well.
+local function FindSetItemFrame(data)
+    local candidates = { data.focus }
+    if data.tooltip and data.tooltip.GetOwner then
+        candidates[#candidates + 1] = data.tooltip:GetOwner()
+    end
+    if data.focus.GetParent then
+        candidates[#candidates + 1] = data.focus:GetParent()
+    end
+    for _, frame in ipairs(candidates) do
+        if type(frame) == "table" and frame.sourceID and frame.invType then
+            return frame
+        end
+    end
+end
+
+
 function strategies.wowhead.GetTransmogSetItemFromFocus(data)
     if not IsRetail() then return end
-    local focus = data.focus
-    -- The tooltip owner can be the item button while mouse focus is a child.
-    if not focus.sourceID and data.tooltip and data.tooltip.GetOwner then
-        focus = data.tooltip:GetOwner() or focus
-    end
-    if not focus.sourceID then return end
+    local frame = FindSetItemFrame(data)
+    if not frame then return end
 
     -- Sets already identify the exact appearance source. Unlike the Items tab,
     -- they do not always populate WardrobeCollectionFrame.tooltipSourceIndex.
-    return GetItemFromAppearanceSource(focus.sourceID, focus.itemID)
+    return GetItemFromAppearanceSource(frame.sourceID, frame.itemID)
 end
 
 
