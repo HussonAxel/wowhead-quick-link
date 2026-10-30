@@ -449,16 +449,17 @@ end
 
 
 function strategies.wowhead.GetTransmogSetItemFromFocus(data)
-    if not data.focus.sourceID or not WardrobeCollectionFrame.tooltipSourceIndex then return end
-    local selectedAppearance = C_TransmogCollection.GetAppearanceInfoBySource(data.focus.sourceID).appearanceID
-    local selectedStyle = WardrobeCollectionFrame.tooltipSourceIndex
+    if not IsRetail() then return end
+    local focus = data.focus
+    -- The tooltip owner can be the item button while mouse focus is a child.
+    if not focus.sourceID and data.tooltip and data.tooltip.GetOwner then
+        focus = data.tooltip:GetOwner() or focus
+    end
+    if not focus.sourceID then return end
 
-    local appearanceSources = C_TransmogCollection.GetAppearanceSources(selectedAppearance)
-    CollectionWardrobeUtil.SortSources(appearanceSources, selectedAppearance, data.focus.sourceID)
-
-    local source = appearanceSources[selectedStyle]
-    if not source then return end
-    return GetItemFromAppearanceSource(source.sourceID, source.itemID)
+    -- Sets already identify the exact appearance source. Unlike the Items tab,
+    -- they do not always populate WardrobeCollectionFrame.tooltipSourceIndex.
+    return GetItemFromAppearanceSource(focus.sourceID, focus.itemID)
 end
 
 
