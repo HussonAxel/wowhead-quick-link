@@ -20,9 +20,22 @@ local regions = {
 }
 
 
+-- Builds the "<id>?bonus=<ids><suffix>" part of a Wowhead URL. Bonus IDs select the exact
+-- version of an item (Normal/Heroic/Mythic, Warforged...), which can have a different
+-- appearance and item level. A user suffix starting with "?" is merged into the query.
+local function FormatIdAndSuffix(id, bonusIds, suffix)
+    suffix = suffix or ""
+    if not bonusIds then return id, suffix end
+    if suffix:sub(1, 1) == "?" then
+        suffix = "&" .. suffix:sub(2)
+    end
+    return id .. "?bonus=" .. bonusIds, suffix
+end
+
+
 function nameSpace.strategies.GetWowheadUrl(dataSources)
     for _, strategy in pairs(strategies.wowhead) do
-        local id, type = strategy(dataSources)
+        local id, type, bonusIds = strategy(dataSources)
         if id and type then
             local typeStr
             if type == "npc" then
@@ -30,8 +43,9 @@ function nameSpace.strategies.GetWowheadUrl(dataSources)
             else
                 typeStr = type:sub(1, 1):upper() .. type:sub(2)
             end
+            local idPart, suffix = FormatIdAndSuffix(id, bonusIds, WowheadQuickLinkCfg.suffix)
             return "Wowhead " .. typeStr,
-                string.format(nameSpace.baseWowheadUrl, WowheadQuickLinkCfg.prefix, type, id, WowheadQuickLinkCfg.suffix)
+                string.format(nameSpace.baseWowheadUrl, WowheadQuickLinkCfg.prefix, type, idPart, suffix)
         end
     end
 end
@@ -126,12 +140,62 @@ function strategies.armory.GetArmoryFromLfgApplicant(data)
 end
 
 
+-- Position of the bonus ID count in an item string, counting the item ID as field 1:
+-- itemID:enchantID:gem1:gem2:gem3:gem4:suffixID:uniqueID:linkLevel:specializationID:
+-- modifiersMask:itemContext:numBonusIDs[:bonusID1:...]
+local ITEM_BONUS_COUNT_FIELD = 13
+
+
+-- Returns the bonus IDs of an item link as "id1:id2", the format Wowhead expects, or nil.
+local function GetItemBonusIds(link)
+    local itemString = link:match("item:([%-%d:]+)")
+    if not itemString then return end
+    local fields = {}
+    for field in (itemString .. ":"):gmatch("([^:]*):") do
+        fields[#fields + 1] = field
+    end
+    local count = tonumber(fields[ITEM_BONUS_COUNT_FIELD])
+    if not count or count < 1 then return end
+    local bonusIds = {}
+    for i = 1, count do
+        local bonusId = tonumber(fields[ITEM_BONUS_COUNT_FIELD + i])
+        if bonusId then
+            bonusIds[#bonusIds + 1] = bonusId
+        end
+    end
+    if #bonusIds > 0 then
+        return table.concat(bonusIds, ":")
+    end
+end
+
+
 local function GetFromLink(link)
-    if not link then return end
+    if not link or IsSecret(link) then return end
     local _, _, type, id = link:find("%|?H?(%a+):(%d+):")
     if type == "azessence" then return id end
     if type == "questie" then return id, "quest" end
+    -- Classic Wowhead pages don't take bonus IDs.
+    if type == "item" and IsRetail() then return id, type, GetItemBonusIds(link) end
     return id, type
+end
+
+
+-- The collection API gives an item link for each appearance source; it carries the bonus IDs
+-- of that exact version, where the plain itemID would point to the base version.
+local function GetItemFromAppearanceSource(sourceID, fallbackItemID)
+    if sourceID and C_TransmogCollection.GetAppearanceSourceInfo then
+        local info = C_TransmogCollection.GetAppearanceSourceInfo(sourceID)
+        -- Recent clients return a table, older ones a list of values (itemLink is the 6th).
+        local link
+        if type(info) == "table" then
+            link = info.itemLink
+        else
+            link = select(6, C_TransmogCollection.GetAppearanceSourceInfo(sourceID))
+        end
+        local id, linkType, bonusIds = GetFromLink(link)
+        if id and linkType == "item" then return id, linkType, bonusIds end
+    end
+    return fallbackItemID, "item"
 end
 
 
@@ -378,7 +442,9 @@ function strategies.wowhead.GetTransmogCollectionItemFromFocus(data)
     if not data.focus.visualInfo or not WardrobeCollectionFrame.tooltipSourceIndex then return end
     local selectedAppearance = data.focus.visualInfo.visualID
     local selectedStyle = WardrobeCollectionFrame.tooltipSourceIndex
-    return CollectionWardrobeUtil.GetSortedAppearanceSources(selectedAppearance)[selectedStyle].itemID, "item"
+    local source = CollectionWardrobeUtil.GetSortedAppearanceSources(selectedAppearance)[selectedStyle]
+    if not source then return end
+    return GetItemFromAppearanceSource(source.sourceID, source.itemID)
 end
 
 
@@ -388,9 +454,11 @@ function strategies.wowhead.GetTransmogSetItemFromFocus(data)
     local selectedStyle = WardrobeCollectionFrame.tooltipSourceIndex
 
     local appearanceSources = C_TransmogCollection.GetAppearanceSources(selectedAppearance)
-    CollectionWardrobeUtil.SortSources(appearanceSources, appearanceID, data.focus.sourceID)
+    CollectionWardrobeUtil.SortSources(appearanceSources, selectedAppearance, data.focus.sourceID)
 
-    return appearanceSources[selectedStyle].itemID, "item"
+    local source = appearanceSources[selectedStyle]
+    if not source then return end
+    return GetItemFromAppearanceSource(source.sourceID, source.itemID)
 end
 
 
